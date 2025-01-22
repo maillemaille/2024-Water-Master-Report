@@ -1,0 +1,367 @@
+---
+title: "2024 NPT Water Master Graphs"
+output: html_document
+date: "2025-01-08"
+author: "Maille Gray"
+---
+#Libraries
+```{r}
+library(tidyverse) #includes ggplot, dplyr, lubridate, purrr
+library(openxlsx)
+```
+
+#Read the .csv. If unsure of your working directory, use the getwd() and setwd() functions.
+```{r}
+#read the .csv
+df <- read.csv("NPTsummary.csv") #make sure the .csv is in the same working directory
+
+#convert the Date column from a string to a date
+df$Date <- as.Date(df$Date)
+
+```
+
+#Identify acequia
+```{r}
+#Name of the desired acequia goes here
+acequia = "CICD"
+```
+
+#calculate statistics for the acequia
+```{r}
+#replace space with . in acequia name to make compatible with dataframe column names
+colname <- str_replace_all(acequia, " ", ".")
+
+#dataframe "a" holds the date, the daily volume, and accumulation of daily volume
+a <- data.frame(
+  date = as.Date(df$Date), #read Date column as a date type
+  daily = df[[colname]],  # Using [[ to dynamically reference the column
+  total = cumsum(df[[colname]])  # Use cumsum to accumulate the values
+)
+
+#make a table of the monthly totals
+summary <- aggregate(cbind(daily)~month(date),
+                     data=a,FUN=sum)
+colnames(summary) <- c("month", "total") #rename columns
+summary <- summary %>% mutate(month = month.abb[as.numeric(month)]) #replace the month number with month abbrev.
+
+#calculate the total diversion and create a summary table
+full <- a %>%
+  summarise(full = sum(daily, na.rm = TRUE))
+pull (full) #save the total as numeric value
+summary[nrow(summary) + 1,] = c("Total",full) #add the total to the summary column
+
+#switch rows and columns and save in s
+s <- t(summary)
+
+#write table to excel
+filename = paste(acequia, ".xlsx")
+write.xlsx(s,filename, rowNames=FALSE, colNames=FALSE)
+```
+
+#Make the diversion graph. Because we're working with two different scales, one for the daily diversion and one for the total diversion, there's a scaling coefficiant so that the lines plot evenly. The Total Volume amount is multiplied by this coefficiant so it plots at the same scale as the Daily Diversion, then the legend amounts are divided by the coefficiant so they reflect the actual values.
+```{r}
+#scaling coefficiant
+coefficiant = 0.01
+
+#make the ggplot using dataframe a
+plot <- ggplot(a) + 
+  #plot the daily diversion bars. color is set to what we want to appear in the legend. items within the aes() brackets appear in the legend, but items outside won't show up in the legend
+  geom_col(aes(x = date, y = daily, colour = "Daily Diversion", width = 0.05), fill = "#47ACF1") +
+  #plot total diversion line. Note multiplying coefficient to make scales more even
+  geom_line(aes(x = date, y = coefficiant*total, colour = "Total Diversion"), linewidth = 1.2, group = 1) +
+  #use scale_color_manual to assign a color to the legend items
+  scale_color_manual(values = c("Daily Diversion"="#4594ca", "Total Diversion"="darkblue"))+
+  scale_y_continuous(sec.axis = sec_axis(~./coefficiant, name = "Total Volume"))+ #set up second axis
+  #set up x axis labels. The date breaks occur every one month. %b calls the month abbreviation and %d calls the day
+  scale_x_date(date_breaks = "1 month", date_labels= "%b %d")+
+  labs(y = "Daily Volume", title = paste(acequia, "Daily Average & Total Volume (Acre-Feet)"))+ #set up y labels and title
+  theme_bw()+ #black/white theme
+  theme(
+    text = element_text(family = "serif"), #set font to Times
+    legend.position = "bottom", #put legend at bottom
+    legend.title = element_blank(), #remove legend title
+    axis.title.x=element_blank(), #remove x axis title
+    plot.title = element_text(hjust = 0.5, size = 14)) #move and resize plot title
+plot
+```
+
+#save plot
+```{r}
+#save the plot as a .jpg
+ggsave(plot,
+       filename = paste(acequia, ".jpg"),
+       device = "jpg",
+       height = 3.25, width = 5, units = "in" )
+```
+
+##Use in unique cases and overdiversions
+
+#Nambe manipulations
+#not currently using
+```{r}
+#create a dataframe only using Highline, Upper Consolidated, and Lower Consolidated
+n <- data.frame(
+  date = as.Date(df$Date), #read Date column as a date type
+  Highline = df$Highline,
+  Upper.Consolidated = df$Upper.Consolidated,
+  Lower.Consolidated = df$Lower.Consolidated,
+  h = cumsum(df$Highline),
+  u = cumsum(df$Upper.Consolidated),
+  l = cumsum(df$Lower.Consolidated) # Use cumsum to accumulate the values
+)
+n$sum <- n$h + n$u + n$l #make a sum column of all the diversions
+
+#set threshold to allowed Pueblo diversion
+threshold <- 1459
+#Find the first instance where diversion is met
+result <- n %>%
+  filter(sum > threshold) %>%
+  slice(1) %>%  # Select the first row where the max diversion is met
+  select(date, h, u, l)
+
+#create a column that indicates when overdiversion has been reached
+n <- n %>%
+  mutate(h_exceeds_threshold = ifelse(h > result$h, "Exceeds Max Allowable", " Total Volume"))
+
+
+coefficiant = 0.01 #adjust scaling of bars and line
+
+#make the plot for Highline
+highline <- ggplot(n) + 
+  geom_col(aes(x = date, y = Highline, colour = "Daily Diversion", width = 0.1), fill = "#47ACF1") + #plot the daily diversion as columns
+  scale_color_manual(
+    values = c("Exceeds Max Allowable" = "red", 
+               " Total Volume" = "darkblue", 
+               "Daily Diversion" = "#4594ca"),
+    breaks = c("Daily Diversion", "Exceeds Max Allowable", " Total Volume")  # Specify the order
+  ) + 
+  #plot total diversion line. Note multiplying coefficient to make scales more even. Color is based on the "exceeds threshold" column
+  geom_line(aes(x = date, y = coefficiant * h, colour = h_exceeds_threshold), linewidth = 1.2, group = 1) + # Color line based on h_exceeds_threshold
+  scale_y_continuous(sec.axis = sec_axis(~./coefficiant, name = "Total Volume"))+ #set up second axis
+  scale_x_date(date_breaks = "1 month", date_labels= "%b %d")+ #set up x axis labels
+  labs(y = "Daily Volume", title = "Highline Daily Average & Total Volume (Acre-Feet)")+ #set up y labels
+  theme_bw()+ #black/white theme
+  geom_segment(data = result, aes(x = date, y = coefficiant * h, xend = date+3, yend = coefficiant * h-0.5, colour = "segment"))+
+  geom_point(data = result, aes(x = date, y = coefficiant * h), color = "red", size = 4) + 
+  geom_label(data = result, aes(x = date+3, y = coefficiant * h-0.5, label = format(date, "%b %d")), 
+            vjust = 1, hjust = 0, size = 3, color = "black")+
+  theme(
+    text = element_text(family = "serif"), #set font to Times
+    legend.position = "bottom", #put legend at bottom
+    legend.title = element_blank(), #remove legend title
+    axis.title.x=element_blank(), #remove x axis title
+    plot.title = element_text(hjust = 0.5, size = 18)) #move and resize plot title
+highline
+```
+
+#plot graphs for acequias that overdiverted
+```{r}
+threshold = 51.43 #enter allowed diversion amount
+
+#create a column called exceeds_threshold to identify points where allowed diversion is exceeded
+a <- a %>%
+  mutate(exceeds_threshold = ifelse(a$total > threshold, "Exceeds Max Allowable", " Total Volume"))
+
+#find the first date where maximum allowed diversion is exceeded
+result <- a %>%
+  filter(total > threshold) %>%
+  slice(1) %>%  # Select the first row where the condition is met
+  select(date, total)
+
+coefficiant = 0.012 #adjusts scaling of bars and line
+
+#make the plot so that the total volume line turns red when max diversion is reached
+p <- ggplot(a) + 
+  geom_col(aes(x = date, y = daily, colour = "Daily Diversion", width = 0.1), fill = "#47ACF1") + #plot the daily diversion as columns
+  #plot total diversion line. Note multiplying coefficient to make scales more even. Line color is based on whether or not the diversion exceeds the maximum
+  geom_line(aes(x = date, y = coefficiant * total, colour = exceeds_threshold), linewidth = 1.2, group = 1) +
+  #set legend colors
+  scale_color_manual(
+    values = c("Exceeds Max Allowable" = "red", 
+               " Total Volume" = "darkblue", 
+               "Daily Diversion" = "#4594ca"),
+    breaks = c("Daily Diversion", " Total Volume", "Exceeds Max Allowable")  # Specify the legend order
+  ) + 
+  scale_y_continuous(sec.axis = sec_axis(~./coefficiant, name = "Total Volume"))+ #set up second axis
+  scale_x_date(date_breaks = "1 month", date_labels= "%b %d")+ #set up x axis labels
+  labs(y = "Daily Volume", title = paste(acequia, "Daily Average & Total Volume (Acre-Feet)"))+ #set up y labels
+  theme_bw()+ #black/white theme
+  geom_segment(data = result, aes(x = date, y = coefficiant * total, xend = date+3, yend = coefficiant * total-0.2, colour = "segment"))+
+  geom_point(data = result, aes(x = date, y = coefficiant * total), color = "red", size = 4) + 
+  geom_label(data = result, aes(x = date+3, y = coefficiant * total-0.2, label = format(date, "%b %d")), 
+            vjust = 1, hjust = 0, size = 3, color = "black")+
+  theme(
+    text = element_text(family = "serif"), #set font to Times
+    legend.position = "bottom", #put legend at bottom
+    legend.title = element_blank(), #remove legend title
+    axis.title.x=element_blank(), #remove x axis title
+    plot.title = element_text(hjust = 0.5, size = 14)) #move and resize plot title
+p
+```
+
+#save plot
+```{r}
+#save the plot as a .jpg
+ggsave(p,
+       filename = paste(acequia, ".jpg"),
+       device = "jpg",
+       height = 3.25, width = 5, units = "in" )
+```
+
+##The following code chunks are for making plots from other data, including precipitation and snow water equivalent
+
+#SWE
+```{r}
+swe <- read.csv("swe.csv") #read the .csv
+
+swe$percentmedian <- (swe$swe/swe$medianswe)*100 #create a percent of median column
+
+swe$date <- as.Date(swe$date) #read the date column as a Date type
+
+swe_filtered <- swe[swe$percentmedian >= 100, ] #filter dates where swe exceeds 100% of the median
+swe_filtered <- swe_filtered %>% drop_na #exclude all na values
+swe_filtered = swe_filtered[-1,] #remove the first row because it was an outlier
+```
+
+#Plot SWE
+```{r}
+coefficiant = 0.22 #adjust scaling of bars and line. coefficiant applies to the percent median lines
+
+#make the ggplot
+plot <- ggplot(swe) + 
+  #plot the percent of median line
+  geom_line(aes(x = date, y = coefficiant * percentmedian, color = "Percent of Median"), linewidth = 0.5) +
+  #make the percent of median line turn green where SWE exceeds 100%
+  geom_line(data = swe_filtered, aes(x = date, y = coefficiant * percentmedian), color = "green", linewidth = 0.5)+
+  #plot the median swe line
+  geom_line(aes(x = date, y = medianswe, colour = "1991-2020 SWE Median"), linewidth = 0.8) + #plot the median swe
+  #plot the 2024 swe line
+  geom_line(aes(x = date, y = swe, colour = "2024 SWE"), linewidth = 1.2) +
+  #plot 100% as a dotted line
+  geom_line(aes(x = date, y = 100*coefficiant, color = "100% of Median"), linewidth = 0.5, linetype = "dotdash")+
+  #assign colors to legend items
+  scale_color_manual(
+    values = c(
+      "2024 SWE"="#006db7", 
+      "1991-2020 SWE Median"="#41b2ff", 
+      "Percent of Median" = "orange"),
+    breaks = c("2024 SWE", "1991-2020 SWE Median", "Percent of Median"))+
+  scale_y_continuous(sec.axis = sec_axis(~./coefficiant, name = "Percent of Median"))+ #set up second axis
+  scale_x_date(date_breaks = "1 month", date_labels= "%b %d")+ #set up x axis labels
+  labs(y = "Snow Water Equivalent (in)", title = paste("Snow Water Equivalent at SNOTEL Station 922 (Tesuque Peak)"))+ #set up y labels and title
+  theme_bw()+ #black/white theme
+  theme(
+    text = element_text(family = "serif"), #set font to Times
+    legend.position = "bottom", #put legend at bottom
+    legend.title = element_blank(), #remove legend title
+    axis.title.x=element_blank(), #remove x axis title
+    plot.title = element_text(hjust = 0.5, size = 14)) #move and resize plot title
+plot
+```
+
+#monthly precip values
+```{r}
+precip <- read.csv("precip.csv") #read the precip csv
+
+precip$date <- as.Date(precip$date) #read date column as Date type
+
+#manipulating the precip dataframe to make it easier to plot the snotel data as two columns
+precip_long <- precip %>%
+  pivot_longer(cols = c(precip_inc, precip_avg), 
+               names_to = "type", 
+               values_to = "precip_value") %>%
+  mutate(type = factor(type, levels = c("precip_inc", "precip_avg"), 
+                       labels = c("2024 Precipitation", "1991-2020 Average Precipitation")))
+```
+
+#snotel precipitation plot
+```{r}
+plot <- ggplot(precip_long) +
+  #plot snotel precip as two bars - one for 1991-2020 average and one for 2024 monthly means
+  geom_bar(aes(x = date, y = precip_value, fill = type), 
+           position = "dodge", stat = "identity") +
+  scale_fill_manual(
+    values = c(
+      "2024 Precipitation" = "#1d9bca", 
+      "1991-2020 Average Precipitation" = "#7adbff"),
+    breaks = c("2024 Precipitation", "1991-2020 Average Precipitation")) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") + # Set up x axis labels
+  labs(y = "Precipitation Increment (in)", 
+       title = "Monthly Precipitation at SNOTEL Station 922 (Tesuque Peak)") + 
+  theme_bw() + # Black/white theme
+  theme(
+    text = element_text(family = "serif"), # Set font to Times
+    legend.position = "bottom", # Put legend at bottom
+    legend.title = element_blank(), # Remove legend title
+    axis.title.x = element_blank(), # Remove x axis title
+    plot.title = element_text(hjust = 0.5, size = 14)) # Move and resize plot title
+
+plot
+```
+
+#precip values plot
+```{r}
+plot <- ggplot(precip)+
+  geom_line(aes(x = date, y=mean_r2,color = "Northern Mountains Area Avg"), linewidth = 1.2)+
+  geom_line(aes(x=date, y =precip_inc, color = "Tesuque Peak SNOTEL Station"), linewidth = 1.2)+
+  geom_line(aes(x=date, y =sfe_precip, color = "Santa Fe Airport NOAA Station"), linewidth = 1.2)+
+  geom_line(aes(x = date,y=cocorahs, color = "Pojoaque CoCoRaHS Gauges"), linewidth = 1.2)+
+  scale_color_manual(
+    values = c(
+      "Tesuque Peak SNOTEL Station" = "#5AE76D",
+      "Santa Fe Airport NOAA Station" = "#EEB568",
+      "Pojoaque CoCoRaHS Gauges" = "#008f98",
+      "Northern Mountains Area Avg" = "#6e108c"
+    )
+  )+
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") + # Set up x axis labels
+  labs(y = "Precipitation (in)", 
+       title = "2024 Monthly Precipitation") + 
+  guides(color = guide_legend(nrow = 2))+
+  theme_bw() + # Black/white theme
+  theme(
+    text = element_text(family = "serif"), # Set font to Times
+    legend.position = "bottom", # Put legend at bottom
+    legend.title = element_blank(), # Remove legend title
+    legend.text=element_text(size=8),
+    axis.title.x = element_blank(), # Remove x axis title
+    plot.title = element_text(hjust = 0.5, size = 18)) # Move and resize plot title
+
+plot
+```
+
+#save plot
+```{r}
+ggsave(plot,
+       filename = "ncep.jpg",
+       device = "jpg",
+       height = 5, width = 5, units = "in" )
+```
+
+#create the ncep graph
+```{r}
+coefficiant = 2.5 #adjust scaling of bars and line
+
+plot <- ggplot(precip)+
+  geom_col(aes(x = date,y=anomaly_r2*coefficiant, color = "2024 Compared to 1991-2020 Mean"), fill = NA)+
+  geom_line(aes(x = date, y=mean_r2,color = "2024 Area Avg"), linewidth = 1.2)+
+  geom_line(aes(x=date, y =0), color = "#b688c6")+
+  scale_y_continuous(sec.axis = sec_axis(~./coefficiant, name = "Deviation from Normal Conditions"))+ #set up second axis
+  scale_color_manual(
+    values = c(
+      "2024 Compared to 1991-2020 Mean" = "#b688c6",
+      "2024 Area Avg" = "#6e108c"
+    )
+  )+
+  scale_x_date(date_breaks = "1 month", date_labels = "%b") + # Set up x axis labels
+  labs(y = "Precipitation (in)", 
+       title = "NCEP/NCAR Reanalysis New Mexico : Northern Mountains \n2024 Monthly Precipitation") + 
+  theme_bw() + # Black/white theme
+  theme(
+    text = element_text(family = "serif"), # Set font to Times
+    legend.position = "bottom", # Put legend at bottom
+    legend.title = element_blank(), # Remove legend title
+    axis.title.x = element_blank(), # Remove x axis title
+    plot.title = element_text(hjust = 0.5, size = 12)) # Move and resize plot title
+plot
+```
